@@ -22,6 +22,8 @@
 
 package pascal.taie.analysis.dataflow.solver;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
@@ -81,7 +83,10 @@ public abstract class Solver<Node, Fact> {
     }
 
     protected void initializeBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        for (Node node : cfg) {
+            result.setInFact(node, analysis.newInitialFact());
+        }
+        result.setInFact(cfg.getExit(), analysis.newBoundaryFact(cfg));
     }
 
     /**
