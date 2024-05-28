@@ -23,6 +23,8 @@
 package pascal.taie.analysis.dataflow.solver;
 
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
+import pascal.taie.analysis.dataflow.analysis.LiveVariableAnalysis;
+import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
@@ -34,11 +36,52 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        if (analysis instanceof ConstantPropagation){
+            boolean changed = true;
+            while (changed){
+                changed = false;
+                for (Node n : cfg){
+                    Fact inFact;
+                    if (!n.equals(cfg.getEntry())) {
+                        inFact = analysis.newInitialFact();
+                        for (Node p : cfg.getPredsOf(n)) {
+                            analysis.meetInto(result.getOutFact(p), inFact);
+                        }
+                        result.setInFact(n, inFact);
+                    } else {
+                        inFact = result.getInFact(n);
+                    }
+                    if (result.getOutFact(n) == null){
+                        Fact outFact = analysis.newInitialFact();
+                        analysis.meetInto(inFact, outFact);
+                        result.setOutFact(n, outFact);
+                    }
+                    changed |= analysis.transferNode(n, inFact, result.getOutFact(n));
+                }
+            }
+        }
     }
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        if (analysis instanceof LiveVariableAnalysis) {
+            boolean changed = true;
+            Node exit = cfg.getExit();
+            while (changed) {
+                changed = false;
+                for (Node node : cfg) {
+                    if (node.equals(exit)) continue;
+                    Fact outFact = result.getOutFact(node);
+                    if (outFact == null) {
+                        outFact = analysis.newInitialFact();
+                    }
+                    for (Node s : cfg.getSuccsOf(node)) {
+                        analysis.meetInto(result.getInFact(s), outFact);
+                    }
+                    result.setOutFact(node, outFact);
+                    changed |= analysis.transferNode(node, result.getInFact(node), outFact);
+                }
+            }
+        }
     }
 }

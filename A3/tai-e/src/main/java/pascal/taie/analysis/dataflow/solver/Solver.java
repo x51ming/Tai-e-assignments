@@ -23,6 +23,8 @@
 package pascal.taie.analysis.dataflow.solver;
 
 import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
+import pascal.taie.analysis.dataflow.analysis.LiveVariableAnalysis;
+import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
@@ -77,11 +79,20 @@ public abstract class Solver<Node, Fact> {
     }
 
     protected void initializeForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        if (analysis instanceof ConstantPropagation)
+            result.setInFact(cfg.getEntry(), analysis.newBoundaryFact(cfg));
     }
 
     protected void initializeBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        if (analysis instanceof LiveVariableAnalysis) {
+            Node e = cfg.getExit();
+            for (Node n : cfg.getNodes()) {
+                if (n.equals(e))
+                    result.setInFact(n, analysis.newBoundaryFact(cfg));
+                else
+                    result.setInFact(n, analysis.newInitialFact());
+            }
+        }
     }
 
     /**

@@ -33,19 +33,11 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.AssignStmt;
-import pascal.taie.ir.stmt.If;
-import pascal.taie.ir.stmt.Stmt;
-import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.ir.exp.*;
+import pascal.taie.ir.stmt.*;
 
 import java.util.Comparator;
+import java.util.Queue;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -69,8 +61,63 @@ public class DeadCodeDetection extends MethodAnalysis {
                 ir.getResult(LiveVariableAnalysis.ID);
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+        ir.stmts().forEach(deadCode::add);
+
+        Queue<Stmt> workList = new java.util.LinkedList<>();
+        Set<Stmt> visited = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
+        workList.add(cfg.getEntry());
+        Stmt p;
+        while ((p = workList.poll()) != null) {
+            deadCode.remove(p);
+            if (!visited.add(p)) continue;
+            if (p instanceof Return) {
+            } else if (p instanceof If i) {
+                Value v = ConstantPropagation.evaluate(i.getCondition(), constants.getInFact(p));
+                if (v.isNAC()) {
+                    workList.addAll(cfg.getSuccsOf(p));
+                    continue;
+                }
+                assert v.isConstant();
+                int cs = v.getConstant();
+                cfg.getOutEdgesOf(p).forEach(e -> {
+                    if (e.getKind() == Edge.Kind.IF_TRUE && cs != 0) workList.add(e.getTarget());
+                    if (e.getKind() == Edge.Kind.IF_FALSE && cs == 0) workList.add(e.getTarget());
+                });
+            } else if (p instanceof SwitchStmt c) {
+                Value v = ConstantPropagation.evaluate(c.getVar(), constants.getInFact(p));
+                if (v.isNAC()) {
+                    workList.addAll(cfg.getSuccsOf(p));
+                    continue;
+                }
+                assert v.isConstant();
+                int cv = v.getConstant();
+                boolean found = false;
+                for (Edge<Stmt> e : cfg.getOutEdgesOf(p)) {
+                    if (e.getKind() == Edge.Kind.SWITCH_CASE
+                            && e.getCaseValue() == cv
+                    ) {
+                        workList.add(e.getTarget());
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    cfg.getOutEdgesOf(p).stream()
+                            .filter(e -> e.getKind() == Edge.Kind.SWITCH_DEFAULT)
+                            .findFirst().ifPresent(e -> workList.add(e.getTarget()));
+                }
+            } else if (p instanceof AssignStmt<?, ?> a) {
+                RValue r = a.getRValue();
+                LValue l = a.getLValue();
+                if (l instanceof Var lv)
+                    if (hasNoSideEffect(r) && !liveVars.getOutFact(p).contains(lv)) {
+                        deadCode.add(p);
+                    }
+                workList.addAll(cfg.getSuccsOf(p));
+            } else {
+                workList.addAll(cfg.getSuccsOf(p));
+                System.err.println("Unknown statement type: " + p.getClass() + " " + p);
+            }
+        }
         return deadCode;
     }
 
