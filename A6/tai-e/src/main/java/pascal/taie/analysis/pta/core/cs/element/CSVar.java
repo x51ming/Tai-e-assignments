@@ -26,6 +26,8 @@ import pascal.taie.analysis.pta.core.cs.context.Context;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.language.type.Type;
 
+import java.util.Objects;
+
 /**
  * Represents context-sensitive variables.
  */
