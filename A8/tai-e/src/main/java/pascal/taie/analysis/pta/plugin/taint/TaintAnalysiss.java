@@ -28,11 +28,15 @@ import pascal.taie.World;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
 import pascal.taie.analysis.pta.core.cs.element.CSManager;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
+import pascal.taie.ir.stmt.Invoke;
+import pascal.taie.language.classes.JMethod;
 
-import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+
+import pascal.taie.language.type.Type;
 
 public class TaintAnalysiss {
 
@@ -60,18 +64,55 @@ public class TaintAnalysiss {
         logger.info(config);
     }
 
-    // TODO - finish me
+    public boolean isSource(JMethod method, Type type) {
+        return config.getSources().contains(new Source(method, type));
+    }
+
+    public boolean isSink(JMethod method, int index) {
+        return config.getSinks().contains(new Sink(method, index));
+    }
+
+    public boolean isTaint(Obj o) {
+        return manager.isTaint(o);
+    }
+
+    public Obj makeTaint(Invoke source, Type type) {
+        return manager.makeTaint(source, type);
+    }
+
+    public Context getTaintObjContext(Obj obj) {
+        return emptyContext;
+    }
 
     public void onFinish() {
         Set<TaintFlow> taintFlows = collectTaintFlows();
-        solver.getResult().storeResult(getClass().getName(), taintFlows);
+        PointerAnalysisResult result = solver.getResult();
+        result.storeResult(getClass().getName(), taintFlows);
     }
 
     private Set<TaintFlow> collectTaintFlows() {
         Set<TaintFlow> taintFlows = new TreeSet<>();
-        PointerAnalysisResult result = solver.getResult();
-        // TODO - finish me
-        // You could query pointer analysis results you need via variable result.
+        solver.getResult().getCSVars().forEach(csvar -> {
+            System.err.println("PTR: " + csvar + " -> " + csvar.getPointsToSet().getObjects());
+        });
+        solver.potentialResults.forEach((csvar, sink) -> {
+            csvar.getPointsToSet().forEach(obj -> {
+                if (manager.isTaint(obj.getObject())) {
+                    Invoke source = manager.getSourceCall(obj.getObject());
+                    sink.forEach(s -> {
+                        taintFlows.add(new TaintFlow(source, s.invoke(), s.index()));
+                    });
+                }
+            });
+        });
+        System.err.println(taintFlows);
+        solver.getResult().getCSVars().forEach(csvar -> {
+            csvar.getPointsToSet().getObjects().stream().filter(obj -> manager.isTaint(obj.getObject())).findFirst().ifPresent(
+                    o -> {
+                        System.err.println("Taint var: " + csvar);
+                    }
+            );
+        });
         return taintFlows;
     }
 }
