@@ -107,6 +107,7 @@ public class Solver {
     void solve() {
         initialize();
         analyze();
+        System.err.println("" + pointerFlowGraph);
         taintAnalysis.onFinish();
     }
 
@@ -159,7 +160,6 @@ public class Solver {
             CSVar lsv = csManager.getCSVar(context, lv);
             CSObj csObj = csManager.getCSObj(ctx, obj);
             workList.addEntry(lsv, PointsToSetFactory.make(csObj));
-            System.err.println("New: " + lsv + " <- " + csObj);
             return null;
         }
 
@@ -168,7 +168,6 @@ public class Solver {
             CSVar lv = csManager.getCSVar(context, stmt.getLValue());
             CSVar rv = csManager.getCSVar(context, stmt.getRValue());
             addPFGEdge(rv, lv);
-            System.err.println("Copy: " + lv + " <- " + rv);
             return null;
         }
 
@@ -191,8 +190,8 @@ public class Solver {
                         PointsToSetFactory.make(csManager.getCSObj(objCtx, obj))
                 );
             }
-            processArgs(cscs, csm, null);
             addReachable(csm);
+            processArgs(cscs, csm, null);
             processRet(cscs, csm);
             return null;
         }
@@ -335,44 +334,32 @@ public class Solver {
                              CSVar thisVar) {
         List<Var> args = caller.getCallSite().getInvokeExp().getArgs();
         List<Var> params = callee.getMethod().getIR().getParams();
+        CSVar result = null;
+        if (caller.getCallSite().getLValue()!=null) {
+            result = csManager.getCSVar(caller.getContext(), caller.getCallSite().getLValue());
+        }
         JMethod calleeMethod = callee.getMethod();
+
         for (int i = 0; i < args.size(); i++) {
             addPFGEdge(
                     csManager.getCSVar(caller.getContext(), args.get(i)),
                     csManager.getCSVar(callee.getContext(), params.get(i))
             );
             if (taintAnalysis.isSink(calleeMethod, i)) {
+                // 在callSite处，第i个参数是sink，记录实参和调用点
                 potentialResults.computeIfAbsent(
                                 csManager.getCSVar(caller.getContext(), args.get(i)),
                                 k -> new ArrayList<>())
                         .add(new CustomSink(caller.getCallSite(), i));
             }
+
+            // process taint transfer
             CSVar arg = csManager.getCSVar(caller.getContext(), args.get(i));
-            System.err.println("Process arg: " + arg + " -> " + arg.getPointsToSet());
-            addPFGEdge(arg, thisVar); // arg -> base
-            if (caller.getCallSite().getLValue() != null) {
-                CSVar lv = csManager.getCSVar(caller.getContext(), caller.getCallSite().getLValue());
-                addPFGEdge(arg, lv); // arg -> result
-                addPFGEdge(thisVar, lv); // base -> result
+            if (thisVar != null) {
+                addPFGEdge(arg, thisVar); // arg -> base
+                if (result != null)
+                    addPFGEdge(thisVar, result); // base -> result
             }
-//            arg.getPointsToSet()
-//                    .forEach(obj -> {
-//                        if (!taintAnalysis.isTaint(obj.getObject())) return;
-//
-//                        // arg -> base
-//                        if (thisVar != null) {
-//                            workList.addEntry(
-//                                    thisVar,
-//                                    PointsToSetFactory.make(obj)
-//                            );
-//                        }
-//                        // arg -> result
-//                        if (caller.getCallSite().getLValue() != null)
-//                            workList.addEntry(
-//                                    csManager.getCSVar(caller.getContext(), caller.getCallSite().getLValue()),
-//                                    PointsToSetFactory.make(obj)
-//                            );
-//                    });
         }
     }
 
@@ -413,18 +400,8 @@ public class Solver {
             JMethod callee = resolveCallee(recvObj, iv);
             if (callee == null) return;
             CSCallSite callSite = csManager.getCSCallSite(recv.getContext(), iv);
-            System.err.println("Process call: " + callSite);
             Context calleeCtx = contextSelector.selectContext(callSite, recvObj, callee);
             CSMethod csCallee = csManager.getCSMethod(calleeCtx, callee);
-
-            if (taintAnalysis.isTaint(recvObj.getObject())) {
-                // base -> result
-                if (iv.getResult() != null)
-                    workList.addEntry(
-                            csManager.getCSVar(recv.getContext(), iv.getResult()),
-                            PointsToSetFactory.make(recvObj)
-                    );
-            }
 
             // this <-- recvObj
             workList.addEntry(

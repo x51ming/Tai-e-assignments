@@ -33,6 +33,7 @@ import pascal.taie.analysis.pta.cs.Solver;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
 
+import java.util.HashSet;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -91,11 +92,14 @@ public class TaintAnalysiss {
     }
 
     private Set<TaintFlow> collectTaintFlows() {
-        Set<TaintFlow> taintFlows = new TreeSet<>();
-        solver.getResult().getCSVars().forEach(csvar -> {
-            System.err.println("PTR: " + csvar + " -> " + csvar.getPointsToSet().getObjects());
-        });
+        Set<TaintFlow> taintFlows = new HashSet<>();
         solver.potentialResults.forEach((csvar, sink) -> {
+            System.err.println("CSVar: " + csvar);
+            System.err.println("PointsToSet: ");
+            csvar.getPointsToSet().forEach(obj -> {
+                System.err.println("\t" + obj);
+            });
+            System.err.println("Sink: " + sink);
             csvar.getPointsToSet().forEach(obj -> {
                 if (manager.isTaint(obj.getObject())) {
                     Invoke source = manager.getSourceCall(obj.getObject());
@@ -105,14 +109,7 @@ public class TaintAnalysiss {
                 }
             });
         });
-        System.err.println(taintFlows);
-        solver.getResult().getCSVars().forEach(csvar -> {
-            csvar.getPointsToSet().getObjects().stream().filter(obj -> manager.isTaint(obj.getObject())).findFirst().ifPresent(
-                    o -> {
-                        System.err.println("Taint var: " + csvar);
-                    }
-            );
-        });
+        System.err.println("TaintFlows: " + taintFlows);
         return taintFlows;
     }
 }
