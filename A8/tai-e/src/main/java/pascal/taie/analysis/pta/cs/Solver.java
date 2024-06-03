@@ -48,6 +48,7 @@ import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
+import pascal.taie.ir.exp.InvokeSpecial;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
@@ -173,26 +174,28 @@ public class Solver {
 
         @Override
         public Void visit(Invoke stmt) {
-            if (!stmt.isStatic()) return null;
             InvokeExp exp = stmt.getInvokeExp();
             CSCallSite cscs = csManager.getCSCallSite(context, stmt);
-            JMethod callee = exp.getMethodRef().resolve();
-            Context mCtx = contextSelector.selectContext(cscs, callee);
-            CSMethod csm = csManager.getCSMethod(mCtx, callee);
-            if (!callGraph.addEdge(new Edge<>(resolveKind(stmt), cscs, csm))) return null;
+            if (stmt.isStatic()) {
+                JMethod callee = exp.getMethodRef().resolve();
+                Context mCtx = contextSelector.selectContext(cscs, callee);
+                CSMethod csm = csManager.getCSMethod(mCtx, callee);
+                if (!callGraph.addEdge(new Edge<>(resolveKind(stmt), cscs, csm))) return null;
 
-            if (stmt.getResult() != null && taintAnalysis.isSource(callee, stmt.getResult().getType())) {
-                // taint source
-                Obj obj = taintAnalysis.makeTaint(stmt, stmt.getResult().getType());
-                Context objCtx = taintAnalysis.getTaintObjContext(obj);
-                workList.addEntry(
-                        csManager.getCSVar(context, stmt.getResult()),
-                        PointsToSetFactory.make(csManager.getCSObj(objCtx, obj))
-                );
+                if (stmt.getResult() != null && taintAnalysis.isSource(callee, stmt.getResult().getType())) {
+                    // taint source
+                    Obj obj = taintAnalysis.makeTaint(stmt, stmt.getResult().getType());
+                    Context objCtx = taintAnalysis.getTaintObjContext(obj);
+                    workList.addEntry(
+                            csManager.getCSVar(context, stmt.getResult()),
+                            PointsToSetFactory.make(csManager.getCSObj(objCtx, obj))
+                    );
+                }
+                addReachable(csm);
+                processArgs(cscs, csm, null);
+                processRet(cscs, csm);
+                return null;
             }
-            addReachable(csm);
-            processArgs(cscs, csm, null);
-            processRet(cscs, csm);
             return null;
         }
 
@@ -200,7 +203,8 @@ public class Solver {
         @Override
         public Void visit(LoadField stmt) {
             // y = x.f
-            if (!stmt.isStatic()) return null;
+            if (!stmt.isStatic())
+                return null;
             Var lv = stmt.getLValue();
             JField field = stmt.getFieldAccess().getFieldRef().resolve();
             StaticField sf = csManager.getStaticField(field);
@@ -221,28 +225,6 @@ public class Solver {
             addPFGEdge(
                     csManager.getCSVar(context, rv), // source
                     sf // target
-            );
-            return null;
-        }
-
-        @Override
-        public Void visit(LoadArray stmt) {
-            // y = x[i]
-            Var lv = stmt.getLValue();
-            addPFGEdge(
-                    csManager.getCSVar(context, stmt.getArrayAccess().getBase()), // source
-                    csManager.getCSVar(context, lv) // target
-            );
-            return null;
-        }
-
-        @Override
-        public Void visit(StoreArray stmt) {
-            // x[i] = y
-            Var rv = stmt.getRValue();
-            addPFGEdge(
-                    csManager.getCSVar(context, rv), // source
-                    csManager.getCSVar(context, stmt.getArrayAccess().getBase()) // target
             );
             return null;
         }
@@ -275,9 +257,6 @@ public class Solver {
             Context ctx = csvar.getContext();
             objs.forEach(csObj -> {
                 csvar.getVar().getLoadFields().forEach(loadField -> {
-                    // z = x.f
-                    // obj --> x (x == &obj)
-                    // x.getContext() == z.getContext()
                     JField field = loadField.getFieldAccess().getFieldRef().resolve();
                     addPFGEdge(
                             csManager.getInstanceField(csObj, field),
@@ -335,7 +314,7 @@ public class Solver {
         List<Var> args = caller.getCallSite().getInvokeExp().getArgs();
         List<Var> params = callee.getMethod().getIR().getParams();
         CSVar result = null;
-        if (caller.getCallSite().getLValue()!=null) {
+        if (caller.getCallSite().getLValue() != null) {
             result = csManager.getCSVar(caller.getContext(), caller.getCallSite().getLValue());
         }
         JMethod calleeMethod = callee.getMethod();
@@ -356,11 +335,28 @@ public class Solver {
             // process taint transfer
             CSVar arg = csManager.getCSVar(caller.getContext(), args.get(i));
             if (thisVar != null) {
-                addPFGEdge(arg, thisVar); // arg -> base
-                if (result != null)
-                    addPFGEdge(thisVar, result); // base -> result
+                if (taintAnalysis.shouldTransfer(
+                        calleeMethod,
+                        i,
+                        -1,
+                        thisVar.getType()
+                ))
+                    addPFGEdge(arg, thisVar); // arg -> base
             }
+            if (result != null && taintAnalysis.shouldTransfer(
+                    calleeMethod,
+                    i,
+                    -2,
+                    result.getType()))
+                addPFGEdge(arg, result); // arg -> result
         }
+
+        if (result != null && taintAnalysis.shouldTransfer(
+                calleeMethod,
+                -1,
+                -2,
+                result.getType()))
+            addPFGEdge(thisVar, result); // base -> result
     }
 
     private void processRet(CSCallSite caller,
@@ -405,7 +401,7 @@ public class Solver {
 
             // this <-- recvObj
             workList.addEntry(
-                    csManager.getCSVar(callSite.getContext(), callee.getIR().getThis()),
+                    recv,
                     PointsToSetFactory.make(recvObj)
             );
 

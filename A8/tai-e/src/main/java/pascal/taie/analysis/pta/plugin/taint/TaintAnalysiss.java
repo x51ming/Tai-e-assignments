@@ -27,13 +27,15 @@ import org.apache.logging.log4j.Logger;
 import pascal.taie.World;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.cs.context.Context;
-import pascal.taie.analysis.pta.core.cs.element.CSManager;
+import pascal.taie.analysis.pta.core.cs.element.*;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.analysis.pta.cs.Solver;
+import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.Invoke;
 import pascal.taie.language.classes.JMethod;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -77,6 +79,10 @@ public class TaintAnalysiss {
         return manager.isTaint(o);
     }
 
+    public boolean isTaint(CSObj o) {
+        return manager.isTaint(o.getObject());
+    }
+
     public Obj makeTaint(Invoke source, Type type) {
         return manager.makeTaint(source, type);
     }
@@ -91,8 +97,21 @@ public class TaintAnalysiss {
         result.storeResult(getClass().getName(), taintFlows);
     }
 
+    public boolean shouldTransfer(JMethod method, int from, int to, Type type){
+        TaintTransfer t = new TaintTransfer(method, from, to, type);
+        return config.getTransfers().contains(t);
+    }
+
+
     private Set<TaintFlow> collectTaintFlows() {
         Set<TaintFlow> taintFlows = new HashSet<>();
+        solver.getResult().getCSVars().forEach(
+                csVar -> {
+                    if (csVar.getPointsToSet().getObjects().stream().anyMatch(this::isTaint)){
+                        System.err.println("TaintedVar: " + csVar);
+                    }
+                }
+        );
         solver.potentialResults.forEach((csvar, sink) -> {
             System.err.println("CSVar: " + csvar);
             System.err.println("PointsToSet: ");
