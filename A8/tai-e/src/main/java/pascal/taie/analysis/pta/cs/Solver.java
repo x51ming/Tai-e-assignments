@@ -48,6 +48,7 @@ import pascal.taie.analysis.pta.pts.PointsToSet;
 import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
+import pascal.taie.ir.exp.InvokeInstanceExp;
 import pascal.taie.ir.exp.InvokeSpecial;
 import pascal.taie.ir.exp.Var;
 import pascal.taie.ir.stmt.*;
@@ -55,10 +56,7 @@ import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class Solver {
 
@@ -85,6 +83,10 @@ public class Solver {
     public record CustomSink(Invoke invoke, int index) {
     }
 
+    public Set<Pointer> getSuccsOf(Pointer var) {
+        return pointerFlowGraph.getSuccsOf(var);
+    }
+
     public Map<CSVar, List<CustomSink>> potentialResults = new HashMap<>();
 
     Solver(AnalysisOptions options, HeapModel heapModel, ContextSelector contextSelector) {
@@ -108,7 +110,6 @@ public class Solver {
     void solve() {
         initialize();
         analyze();
-        System.err.println("" + pointerFlowGraph);
         taintAnalysis.onFinish();
     }
 
@@ -131,9 +132,12 @@ public class Solver {
      */
     private void addReachable(CSMethod csMethod) {
         if (callGraph.contains(csMethod)) return;
+//        System.err.println("Add reachable: " + csMethod.getMethod());
         callGraph.addReachableMethod(csMethod);
         StmtVisitor<Void> stmtVisitor = new StmtProcessor(csMethod);
-        csMethod.getMethod().getIR().stmts().forEach(stmt -> stmt.accept(stmtVisitor));
+        csMethod.getMethod().getIR().stmts().forEach(stmt -> {
+            stmt.accept(stmtVisitor);
+        });
     }
 
     /**
@@ -191,9 +195,7 @@ public class Solver {
                             PointsToSetFactory.make(csManager.getCSObj(objCtx, obj))
                     );
                 }
-                addReachable(csm);
-                processArgs(cscs, csm, null);
-                processRet(cscs, csm);
+                processArgs(cscs, csm, null, null);
                 return null;
             }
             return null;
@@ -228,6 +230,28 @@ public class Solver {
             );
             return null;
         }
+
+        @Override
+        public Void visit(StoreArray stmt) {
+            // x[i] = y
+            Var rv = stmt.getRValue();
+            addPFGEdge(
+                    csManager.getCSVar(context, rv), // source
+                    csManager.getCSVar(context, stmt.getLValue().getBase()) // target
+            );
+            return null;
+        }
+
+        @Override
+        public Void visit(LoadArray stmt) {
+            // y = x[i]
+            Var lv = stmt.getLValue();
+            addPFGEdge(
+                    csManager.getCSVar(context, stmt.getRValue().getBase()), // source
+                    csManager.getCSVar(context, lv) // target
+            );
+            return null;
+        }
     }
 
     /**
@@ -236,6 +260,8 @@ public class Solver {
     private void addPFGEdge(Pointer source, Pointer target) {
         if (source == null || target == null) return;
         if (!pointerFlowGraph.addEdge(source, target)) return;
+        if (source.toString().contains("/%this") && target.toString().contains("/temp$2"))
+            System.err.println("Add edge: " + source + " -> " + target);
         workList.addEntry(target, source.getPointsToSet());
     }
 
@@ -273,6 +299,8 @@ public class Solver {
                 });
 
                 csvar.getVar().getStoreArrays().forEach(storeArray -> {
+                    // x[i] = y
+                    // y -> x[i]
                     addPFGEdge(
                             csManager.getCSVar(ctx, storeArray.getRValue()),
                             csManager.getArrayIndex(csObj)
@@ -301,6 +329,7 @@ public class Solver {
         PointsToSet diff = PointsToSetFactory.make();
         pointsToSet.forEach(obj -> {
             if (old.contains(obj)) return;
+            obj = taintAnalysis.makeTaint(obj, pointer);
             old.addObject(obj);
             diff.addObject(obj);
         });
@@ -310,7 +339,8 @@ public class Solver {
 
     private void processArgs(CSCallSite caller,
                              CSMethod callee,
-                             CSVar thisVar) {
+                             CSVar recv,
+                             CSObj recvObj) {
         List<Var> args = caller.getCallSite().getInvokeExp().getArgs();
         List<Var> params = callee.getMethod().getIR().getParams();
         CSVar result = null;
@@ -318,59 +348,77 @@ public class Solver {
             result = csManager.getCSVar(caller.getContext(), caller.getCallSite().getLValue());
         }
         JMethod calleeMethod = callee.getMethod();
+        boolean isSinkPoint = false;
+        boolean anyShouldTransfer = false;
 
         for (int i = 0; i < args.size(); i++) {
-            addPFGEdge(
-                    csManager.getCSVar(caller.getContext(), args.get(i)),
-                    csManager.getCSVar(callee.getContext(), params.get(i))
-            );
             if (taintAnalysis.isSink(calleeMethod, i)) {
                 // 在callSite处，第i个参数是sink，记录实参和调用点
                 potentialResults.computeIfAbsent(
                                 csManager.getCSVar(caller.getContext(), args.get(i)),
                                 k -> new ArrayList<>())
                         .add(new CustomSink(caller.getCallSite(), i));
+                isSinkPoint = true;
+                continue;
             }
-
             // process taint transfer
             CSVar arg = csManager.getCSVar(caller.getContext(), args.get(i));
-            if (thisVar != null) {
+            if (recv != null) {
                 if (taintAnalysis.shouldTransfer(
                         calleeMethod,
                         i,
                         -1,
-                        thisVar.getType()
-                ))
-                    addPFGEdge(arg, thisVar); // arg -> base
+                        recv.getType()
+                )) {
+                    anyShouldTransfer = true;
+                    addPFGEdge(arg, recv); // arg -> base
+                }
             }
             if (result != null && taintAnalysis.shouldTransfer(
                     calleeMethod,
                     i,
                     -2,
-                    result.getType()))
+                    result.getType())) {
+                anyShouldTransfer = true;
                 addPFGEdge(arg, result); // arg -> result
+            }
         }
+
+        if (isSinkPoint) return;
 
         if (result != null && taintAnalysis.shouldTransfer(
                 calleeMethod,
                 -1,
                 -2,
-                result.getType()))
-            addPFGEdge(thisVar, result); // base -> result
-    }
+                result.getType())
+        ) {
+            addPFGEdge(recv, result); // base -> result
+            anyShouldTransfer = true;
+        }
 
-    private void processRet(CSCallSite caller,
-                            CSMethod callee
-    ) {
+        if (anyShouldTransfer) {
+            System.err.printf("Skip call: %s\n\t%s\n\t%s\n", calleeMethod, recv, recvObj);
+            return;
+        }
+
+        addReachable(callee);
+        for (int i = 0; i < args.size(); i++) {
+            addPFGEdge(
+                    csManager.getCSVar(caller.getContext(), args.get(i)),
+                    csManager.getCSVar(callee.getContext(), params.get(i))
+            );
+        }
         Var target = caller.getCallSite().getLValue();
         if (target == null) return;
         List<Var> rets = callee.getMethod().getIR().getReturnVars();
         rets.forEach(ret -> {
+//            if (ret.toString().equals("%this")) return;
             addPFGEdge(
                     csManager.getCSVar(callee.getContext(), ret),
                     csManager.getCSVar(caller.getContext(), target)
             );
         });
+
     }
 
     private static CallKind resolveKind(Invoke stmt) {
@@ -401,20 +449,18 @@ public class Solver {
 
             // this <-- recvObj
             workList.addEntry(
-                    recv,
+                    csManager.getCSVar(calleeCtx, callee.getIR().getThis()),
                     PointsToSetFactory.make(recvObj)
             );
 
-            callGraph.addEdge(
+            if (!callGraph.addEdge(
                     new Edge<>(
                             resolveKind(iv),
                             callSite,
                             csCallee
                     )
-            );
-            addReachable(csCallee);
-            processArgs(callSite, csCallee, recv);
-            processRet(callSite, csCallee);
+            )) return;
+            processArgs(callSite, csCallee, recv, recvObj);
         });
     }
 

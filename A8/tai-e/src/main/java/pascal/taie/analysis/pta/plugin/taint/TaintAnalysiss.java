@@ -87,6 +87,20 @@ public class TaintAnalysiss {
         return manager.makeTaint(source, type);
     }
 
+    public Obj makeTaint(Obj obj, Type type){
+        if (!isTaint(obj)) return obj;
+        return manager.makeTaint(manager.getSourceCall(obj), type);
+    }
+
+    public CSObj makeTaint(CSObj obj, Pointer p){
+        Type type;
+        if (p instanceof ArrayIndex)
+            type = obj.getObject().getType();
+        else
+            type = p.getType();
+        return csManager.getCSObj(obj.getContext(), makeTaint(obj.getObject(), type));
+    }
+
     public Context getTaintObjContext(Obj obj) {
         return emptyContext;
     }
@@ -97,7 +111,7 @@ public class TaintAnalysiss {
         result.storeResult(getClass().getName(), taintFlows);
     }
 
-    public boolean shouldTransfer(JMethod method, int from, int to, Type type){
+    public boolean shouldTransfer(JMethod method, int from, int to, Type type) {
         TaintTransfer t = new TaintTransfer(method, from, to, type);
         return config.getTransfers().contains(t);
     }
@@ -105,9 +119,18 @@ public class TaintAnalysiss {
 
     private Set<TaintFlow> collectTaintFlows() {
         Set<TaintFlow> taintFlows = new HashSet<>();
+//        System.err.println("================================");
+//        solver.getResult().getCSVars().forEach(
+//                csVar -> {
+////                    if (csVar.getPointsToSet().getObjects().stream().anyMatch(this::isTaint)){
+//                    System.err.println("Var: " + csVar + " <- " + solver.getSuccsOf(csVar));
+////                    }
+//                }
+//        );
+//        System.err.println("================================");
         solver.getResult().getCSVars().forEach(
                 csVar -> {
-                    if (csVar.getPointsToSet().getObjects().stream().anyMatch(this::isTaint)){
+                    if (csVar.getPointsToSet().getObjects().stream().anyMatch(this::isTaint)) {
                         System.err.println("TaintedVar: " + csVar);
                     }
                 }
